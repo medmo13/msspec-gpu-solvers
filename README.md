@@ -1,4 +1,4 @@
-# msspec_gpu_dev
+# msspec-gpu-solvers
 
 GPU solvers for the matrix-inversion step of MsSpec, a multiple-scattering
 code for electron diffraction. The repository holds eight mixed-precision
@@ -24,7 +24,7 @@ MsSpec itself is not included. Get it from its own project (GPL-3.0), then
 apply the patch in the root of that checkout:
 
     cd /path/to/msspec_checkout
-    patch -p1 < /path/to/msspec_gpu_dev/patches/msspec_gpu.patch
+    patch -p1 < /path/to/msspec-gpu-solvers/patches/msspec_gpu.patch
 
 The patch changes only source files (`.f`, `.f90`, `.py`, `.c`, `.cu`, `.h`,
 `.mk`, `Makefile`, `meson.build`). Build outputs are not included.
@@ -99,7 +99,7 @@ code and once with the GPU variant `own_unrefined`. Each run writes
 
 ## Citation
 
-Citation: see `CITATION.cff`. DOI: to be added after the first Zenodo release.
+Citation: see `CITATION.cff`. DOI: [10.5281/zenodo.24426080](https://doi.org/10.5281/zenodo.24426080) (version 1.0.0); all versions: 10.5281/zenodo.24426079
 
 ## Licence
 

@@ -1,6 +1,6 @@
 cff-version: 1.2.0
 message: "If you use this software, please cite it as below."
-title: "msspec_gpu_dev: GPU solvers for the MsSpec matrix-inversion step (FP16-storage LU, MAGMA and cuSOLVER variants)"
+title: "msspec-gpu-solvers: GPU solvers for the MsSpec matrix-inversion step (FP16-storage LU, MAGMA and cuSOLVER variants)"
 type: software
 authors:
   - family-names: Benaissa
@@ -10,7 +10,8 @@ authors:
   - family-names: Sébilleau
     given-names: Didier
 license: GPL-3.0
-repository-code: "https://github.com/medmo13/msspec_gpu_dev"
+repository-code: "https://github.com/medmo13/msspec-gpu-solvers"
+doi: 10.5281/zenodo.24426079
 version: 1.0.0
 date-released: 2026-11-21
 keywords:
