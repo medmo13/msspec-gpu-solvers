@@ -1,0 +1,29 @@
+{
+ "atoms": 22,
+ "emitter_depth": 1,
+ "energy_eV": 150,
+ "hkl": [
+  0,
+  0,
+  1
+ ],
+ "id": "silicon_hkl_001_radius_5.5A_energy_150eV_depth_1_scan_stereographic_step_2deg",
+ "level": "2p",
+ "material": "silicon",
+ "matrix_order_probe": 2410,
+ "radius_A": 5.5,
+ "scan": {
+  "phi_deg": [
+   0,
+   358,
+   180
+  ],
+  "theta_deg": [
+   0,
+   80,
+   41
+  ],
+  "type": "theta_phi"
+ },
+ "scan_name": "stereographic_step_2deg"
+}

@@ -1,0 +1,25 @@
+{
+ "atoms": 37,
+ "emitter_depth": 1,
+ "energy_eV": 300,
+ "hkl": [
+  1,
+  1,
+  1
+ ],
+ "id": "copper_hkl_111_radius_5.5A_energy_300eV_depth_1_scan_polar_step_1deg",
+ "level": "3p",
+ "material": "copper",
+ "matrix_order_probe": 7774,
+ "radius_A": 5.5,
+ "scan": {
+  "phi_deg": 0,
+  "theta_deg": [
+   0,
+   80,
+   81
+  ],
+  "type": "theta"
+ },
+ "scan_name": "polar_step_1deg"
+}

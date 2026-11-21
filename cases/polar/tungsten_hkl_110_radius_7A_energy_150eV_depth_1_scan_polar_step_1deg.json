@@ -1,0 +1,25 @@
+{
+ "atoms": 56,
+ "emitter_depth": 1,
+ "energy_eV": 150,
+ "hkl": [
+  1,
+  1,
+  0
+ ],
+ "id": "tungsten_hkl_110_radius_7A_energy_150eV_depth_1_scan_polar_step_1deg",
+ "level": "4f",
+ "material": "tungsten",
+ "matrix_order_probe": 7788,
+ "radius_A": 7.0,
+ "scan": {
+  "phi_deg": 0,
+  "theta_deg": [
+   0,
+   80,
+   81
+  ],
+  "type": "theta"
+ },
+ "scan_name": "polar_step_1deg"
+}

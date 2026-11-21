@@ -1,0 +1,29 @@
+{
+ "atoms": 151,
+ "emitter_depth": 1,
+ "energy_eV": 150,
+ "hkl": [
+  1,
+  1,
+  0
+ ],
+ "id": "tungsten_hkl_110_radius_9.5A_energy_150eV_depth_1_scan_stereographic_step_2deg",
+ "level": "4f",
+ "material": "tungsten",
+ "matrix_order_probe": 21100,
+ "radius_A": 9.5,
+ "scan": {
+  "phi_deg": [
+   0,
+   358,
+   180
+  ],
+  "theta_deg": [
+   0,
+   80,
+   41
+  ],
+  "type": "theta_phi"
+ },
+ "scan_name": "stereographic_step_2deg"
+}

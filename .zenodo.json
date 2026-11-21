@@ -1,0 +1,20 @@
+{
+  "title": "msspec_gpu_dev: GPU solvers for the MsSpec matrix-inversion step (FP16-storage LU, MAGMA and cuSOLVER variants)",
+  "upload_type": "software",
+  "description": "GPU port of the MsSpec matrix-inversion solve with eight mixed-precision variants; a purpose-built FP16-storage LU is compared with MAGMA and cuSOLVER. The archive includes the code, the MsSpec patch, a build script, run drivers and example cases.",
+  "creators": [
+    {"name": "Benaissa, Mohammed"},
+    {"name": "Hatada, Keisuke"},
+    {"name": "Sébilleau, Didier"}
+  ],
+  "license": "GPL-3.0",
+  "keywords": [
+    "photoelectron diffraction",
+    "multiple scattering",
+    "GPU",
+    "mixed precision",
+    "LU factorization",
+    "MsSpec"
+  ],
+  "version": "1.0.0"
+}

@@ -1,0 +1,29 @@
+{
+ "atoms": 10,
+ "emitter_depth": 1,
+ "energy_eV": 150,
+ "hkl": [
+  1,
+  1,
+  1
+ ],
+ "id": "copper_hkl_111_radius_3A_energy_150eV_depth_1_scan_stereographic_step_2deg",
+ "level": "3p",
+ "material": "copper",
+ "matrix_order_probe": 1210,
+ "radius_A": 3.0,
+ "scan": {
+  "phi_deg": [
+   0,
+   358,
+   180
+  ],
+  "theta_deg": [
+   0,
+   80,
+   41
+  ],
+  "type": "theta_phi"
+ },
+ "scan_name": "stereographic_step_2deg"
+}

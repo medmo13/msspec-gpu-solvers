@@ -1,0 +1,25 @@
+{
+ "atoms": 148,
+ "emitter_depth": 1,
+ "energy_eV": 150,
+ "hkl": [
+  0,
+  0,
+  1
+ ],
+ "id": "silicon_hkl_001_radius_10.5A_energy_150eV_depth_1_scan_polar_step_1deg",
+ "level": "2p",
+ "material": "silicon",
+ "matrix_order_probe": 15850,
+ "radius_A": 10.5,
+ "scan": {
+  "phi_deg": 0,
+  "theta_deg": [
+   0,
+   80,
+   81
+  ],
+  "type": "theta"
+ },
+ "scan_name": "polar_step_1deg"
+}

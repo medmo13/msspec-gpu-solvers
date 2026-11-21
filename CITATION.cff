@@ -1,0 +1,22 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "msspec_gpu_dev: GPU solvers for the MsSpec matrix-inversion step (FP16-storage LU, MAGMA and cuSOLVER variants)"
+type: software
+authors:
+  - family-names: Benaissa
+    given-names: Mohammed
+  - family-names: Hatada
+    given-names: Keisuke
+  - family-names: Sébilleau
+    given-names: Didier
+license: GPL-3.0
+repository-code: "https://github.com/medmo13/msspec_gpu_dev"
+version: 1.0.0
+date-released: 2026-11-21
+keywords:
+  - photoelectron diffraction
+  - multiple scattering
+  - GPU
+  - mixed precision
+  - LU factorization
+  - MsSpec

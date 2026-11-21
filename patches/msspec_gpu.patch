@@ -1,0 +1,1764 @@
+diff -ruN -x .git -x build -x __pycache__ -x '*.so' -x '*.o' -x '*.mod' -x output a/msspec_python3/src/msspec/iodata_gui.py b/msspec_python3/src/msspec/iodata_gui.py
+--- a/msspec_python3/src/msspec/iodata_gui.py	1970-01-01 00:00:00.000000000 +0000
++++ b/msspec_python3/src/msspec/iodata_gui.py	2026-11-18 20:43:14.552828025 +0100
+@@ -0,0 +1,461 @@
++#!/usr/bin/env python
++# coding: utf-8
++#
++# Copyright © 2016-2020 - Rennes Physics Institute
++#
++# This file is part of msspec.
++#
++# msspec is free software: you can redistribute it and/or modify
++# it under the terms of the GNU General Public License as published by
++# the Free Software Foundation, either version 3 of the License, or
++# (at your option) any later version.
++# msspec is distributed in the hope that it will be useful,
++# but WITHOUT ANY WARRANTY; without even the implied warranty of
++# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++# GNU General Public License for more details.
++# You should have received a copy of the GNU General Public License
++# along with this msspec.  If not, see <http://www.gnu.org/licenses/>.
++#
++# Source file  : src/msspec/iodata_gui.py
++
++"""
++Module iodata_gui
++=================
++
++The wx-based windows of :py:mod:`msspec.iodata`. This module is imported
++only when a window is shown (see ``msspec.iodata._load_gui``), so that
++importing msspec does not load wx, matplotlib's wxagg backend or the
++cluster viewer.
++"""
++
++import os
++
++import numpy as np
++import wx
++import wx.grid
++from matplotlib.backends.backend_wxagg import FigureCanvasWxAgg as FigureCanvas
++from matplotlib.backends.backend_wxagg import NavigationToolbar2WxAgg
++from matplotlib.figure import Figure
++from msspec.msspecgui.msspec.gui.clusterviewer import ClusterViewer
++from msspec.iodata import Data, DataSet, cols2matrix
++
++
++class _GridWindow(wx.Frame):
++    def __init__(self, dset, parent=None):
++        title = 'Data: ' + dset.title
++        wx.Frame.__init__(self, parent, title=title, size=(640, 480))
++        self.create_grid(dset)
++
++    def create_grid(self, dset):
++        grid = wx.grid.Grid(self, -1)
++        grid.CreateGrid(len(dset), len(dset.columns()))
++        for ic, c in enumerate(dset.columns()):
++            grid.SetColLabelValue(ic, c)
++            for iv, v in enumerate(dset[c]):
++                grid.SetCellValue(iv, ic, str(v))
++
++class _ParametersWindow(wx.Frame):
++    def __init__(self, dset, parent=None):
++        title = 'Parameters: ' + dset.title
++        wx.Frame.__init__(self, parent, title=title, size=(400, 480))
++        self.create_tree(dset)
++
++    def create_tree(self, dset):
++        datatree = {}
++        for p in dset.parameters():
++            is_hidden = p.get('hidden', "False")
++            if is_hidden == "True":
++                continue
++            group = datatree.get(p['group'], [])
++            #strval = str(p['value'] * p['unit'] if p['unit'] else p['value'])
++            #group.append("{:s} = {:s}".format(p['name'], strval))
++            group.append("{} = {} {}".format(p['name'], p['value'], p['unit']))
++            datatree[p['group']] = group
++
++        tree = wx.TreeCtrl(self, -1)
++        root = tree.AddRoot('Parameters')
++
++        for key in list(datatree.keys()):
++            item0 = tree.AppendItem(root, key)
++            for item in datatree[key]:
++                tree.AppendItem(item0, item)
++        tree.ExpandAll()
++        tree.SelectItem(root)
++
++class _DataWindow(wx.Frame):
++    def __init__(self, data):
++        assert isinstance(data, (Data, DataSet))
++
++        if isinstance(data, DataSet):
++            dset = data
++            data = Data()
++            data.first = dset
++        self.data = data
++        self._filename = None
++        self._current_dset = None
++
++        wx.Frame.__init__(self, None, title="", size=(640, 480))
++
++        self.Bind(wx.EVT_CLOSE, self.on_close)
++
++        # Populate the menu bar
++        self.create_menu()
++
++        # Create the status bar
++        statusbar = wx.StatusBar(self, -1)
++        statusbar.SetFieldsCount(3)
++        statusbar.SetStatusWidths([-2, -1, -1])
++        self.SetStatusBar(statusbar)
++
++        # Add the notebook to hold all graphs
++        self.notebooks = {}
++        sizer = wx.BoxSizer(wx.VERTICAL)
++        #sizer.Add(self.notebook)
++        self.SetSizer(sizer)
++
++        self.Bind(wx.EVT_NOTEBOOK_PAGE_CHANGED, self.on_page_changed)
++
++        self.create_notebooks()
++
++        self.update_title()
++
++    def create_notebooks(self):
++        for key in list(self.notebooks.keys()):
++            nb = self.notebooks.pop(key)
++            nb.Destroy()
++
++        for dset in self.data:
++            nb = wx.Notebook(self, -1)
++            self.notebooks[dset.title] = nb
++            #self.GetSizer().Add(nb, 1, wx.ALL|wx.EXPAND)
++            self.GetSizer().Add(nb, proportion=1, flag=wx.ALL|wx.EXPAND)
++            for view in dset.views():
++                self.create_page(nb, view)
++
++        self.create_menu()
++
++        self.show_dataset(self.data[0].title)
++
++
++    def create_menu(self):
++        menubar = wx.MenuBar()
++        menu1 = wx.Menu()
++        menu1.Append(110, "Open\tCtrl+O")
++        menu1.Append(120, "Save\tCtrl+S")
++        menu1.Append(130, "Save as...")
++        menu1.Append(140, "Export\tCtrl+E")
++        menu1.AppendSeparator()
++        menu1.Append(199, "Close\tCtrl+Q")
++
++        menu2 = wx.Menu()
++        for i, dset in enumerate(self.data):
++            menu_id = 201 + i
++            menu2.AppendRadioItem(menu_id, dset.title)
++            self.Bind(wx.EVT_MENU, self.on_menu_dataset, id=menu_id)
++
++        self.Bind(wx.EVT_MENU, self.on_open, id=110)
++        self.Bind(wx.EVT_MENU, self.on_save, id=120)
++        self.Bind(wx.EVT_MENU, self.on_saveas, id=130)
++        self.Bind(wx.EVT_MENU, self.on_export, id=140)
++        self.Bind(wx.EVT_MENU, self.on_close, id=199)
++
++
++        menu3 = wx.Menu()
++        menu3.Append(301, "Data")
++        menu3.Append(302, "Cluster")
++        menu3.Append(303, "Parameters")
++
++        self.Bind(wx.EVT_MENU, self.on_viewdata, id=301)
++        self.Bind(wx.EVT_MENU, self.on_viewcluster, id=302)
++        self.Bind(wx.EVT_MENU, self.on_viewparameters, id=303)
++
++        menubar.Append(menu1, "&File")
++        menubar.Append(menu2, "&Datasets")
++        menubar.Append(menu3, "&View")
++        self.SetMenuBar(menubar)
++
++    def on_open(self, event):
++        if self.data.is_dirty():
++            mbx = wx.MessageDialog(self, ('Displayed data is unsaved. Do '
++                                        'you wish to save before opening'
++                                        'another file ?'),
++                                'Warning: Unsaved data',
++                                wx.YES_NO | wx.ICON_WARNING)
++            if mbx.ShowModal() == wx.ID_YES:
++                self.on_saveas(wx.Event())
++            mbx.Destroy()
++
++        wildcard = "HDF5 files (*.hdf5)|*.hdf5"
++        dlg = wx.FileDialog(
++            self, message="Open a file...", defaultDir=os.getcwd(),
++            defaultFile="", wildcard=wildcard, style=wx.FD_OPEN
++            )
++
++        if dlg.ShowModal() == wx.ID_OK:
++            path = dlg.GetPath()
++            self._filename = path
++            self.data = Data.load(path)
++            self.create_notebooks()
++        dlg.Destroy()
++        self.update_title()
++
++    def on_save(self, event):
++        if self._filename:
++            if self.data.is_dirty():
++                self.data.save(self._filename)
++        else:
++            self.on_saveas(event)
++
++    def on_saveas(self, event):
++        overwrite = True
++        wildcard = "HDF5 files (*.hdf5)|*.hdf5|All files (*.*)|*.*"
++        dlg = wx.FileDialog(
++            self, message="Save file as ...", defaultDir=os.getcwd(),
++            defaultFile='{}.hdf5'.format(self.data.title.replace(' ','_')),
++            wildcard=wildcard, style=wx.FD_SAVE)
++        dlg.SetFilterIndex(0)
++
++        if dlg.ShowModal() == wx.ID_OK:
++            path = dlg.GetPath()
++            if os.path.exists(path):
++                mbx = wx.MessageDialog(self, ('This file already exists. '
++                                            'Do you wish to overwrite it ?'),
++                                    'Warning: File exists',
++                                    wx.YES_NO | wx.ICON_WARNING)
++                if mbx.ShowModal() == wx.ID_NO:
++                    overwrite = False
++                mbx.Destroy()
++            if overwrite:
++                self.data.save(path)
++                self._filename = path
++        dlg.Destroy()
++        self.update_title()
++
++    def on_export(self, event):
++        overwrite = True
++        dlg = wx.DirDialog(
++            self, message="Export data...", defaultPath=os.getcwd(),
++            style=wx.DD_DEFAULT_STYLE)
++
++        if dlg.ShowModal() == wx.ID_OK:
++            path = dlg.GetPath()
++            if os.listdir(path):
++                mbx = wx.MessageDialog(self,
++                                    ('This folder is not empty. '
++                                        'Exporting tour data here may '
++                                        'overwrite its content. Do you wish '
++                                        'to continue ?'),
++                                    'Warning: Folder is not empty',
++                                    wx.YES_NO | wx.ICON_WARNING)
++                if mbx.ShowModal() == wx.ID_NO:
++                    overwrite = False
++                mbx.Destroy()
++            self.data.export(path, overwrite)
++        dlg.Destroy()
++
++    def on_viewdata(self, event):
++        dset = self.data[self._current_dset]
++        frame = _GridWindow(dset, parent=self)
++        frame.Show()
++
++    def on_viewcluster(self, event):
++        win = wx.Frame(None, size=wx.Size(480, 340))
++        cluster_viewer = ClusterViewer(win, size=wx.Size(480, 340))
++
++        dset = self.data[self._current_dset]
++        #s = StringIO()
++        #s.write(dset.get_parameter(group='Cluster', name='cluster')['value'])
++        #_s = dset.get_parameter(group='Cluster', name='cluster')['value']
++        #print(_s)
++        # rewind to the begining of the string
++        #s.seek(0)
++        #atoms = ase.io.read(s, format='xyz')
++        atoms = dset.get_cluster()
++        cluster_viewer.set_atoms(atoms, rescale=True, center=True)
++        cluster_viewer.rotate_atoms(0., 180.)
++        cluster_viewer.rotate_atoms(-45., -45.)
++        #cluster_viewer.show_emitter(True)
++        win.Show()
++
++    def on_viewparameters(self, event):
++        dset = self.data[self._current_dset]
++        frame = _ParametersWindow(dset, parent=self)
++        frame.Show()
++
++    def on_close(self, event):
++        if self.data.is_dirty():
++            mbx = wx.MessageDialog(self, ('Displayed data is unsaved. Do you '
++                                        'really want to quit ?'),
++                                'Warning: Unsaved data',
++                                wx.YES_NO | wx.ICON_WARNING)
++            if mbx.ShowModal() == wx.ID_NO:
++                mbx.Destroy()
++                return
++        self.Destroy()
++
++
++    def on_menu_dataset(self, event):
++        menu_id = event.GetId()
++        dset_name = self.GetMenuBar().FindItemById(menu_id).GetItemLabelText()
++        self.show_dataset(dset_name)
++
++
++    def show_dataset(self, name):
++        for nb in list(self.notebooks.values()):
++            nb.Hide()
++        self.notebooks[name].Show()
++        self.Layout()
++        self.update_statusbar()
++        self._current_dset = name
++
++    def create_page(self, nb, view):
++        # Get the matplotlib figure
++        figure = view.get_figure()
++
++        # Create a panel
++        p = wx.Panel(nb, -1)
++
++        # Create a matplotlib canvas for the figure
++        canvas = FigureCanvas(p, -1, figure)
++        sizer = wx.BoxSizer(wx.VERTICAL)
++
++        toolbar = NavigationToolbar2WxAgg(canvas)
++        toolbar.Realize()
++
++        #sizer.Add(toolbar, 0, wx.ALL|wx.EXPAND)
++        sizer.Add(toolbar, proportion=0, flag=wx.ALL|wx.EXPAND)
++        toolbar.update()
++
++        #sizer.Add(canvas, 5, wx.ALL|wx.EXPAND)
++        sizer.Add(canvas, proportion=1, flag=wx.ALL|wx.EXPAND)
++
++        p.SetSizer(sizer)
++        p.Fit()
++        p.Show()
++
++        # MPL events
++        figure.canvas.mpl_connect('motion_notify_event', self.on_mpl_motion)
++        figure.canvas.mpl_connect('pick_event', self.on_mpl_pick)
++
++        nb.AddPage(p, view.title)
++        canvas.draw()
++
++
++    def OLDcreate_page(self, nb, view):
++        opts = view._plotopts
++        p = wx.Panel(nb, -1)
++
++        figure = Figure()
++
++        axes = None
++        proj = opts['projection']
++        scale = opts['scale']
++        if proj == 'rectilinear':
++            axes = figure.add_subplot(111, projection='rectilinear')
++        elif proj in ('polar', 'ortho', 'stereo'):
++            axes = figure.add_subplot(111, projection='polar')
++
++        canvas = FigureCanvas(p, -1, figure)
++        sizer = wx.BoxSizer(wx.VERTICAL)
++
++        toolbar = NavigationToolbar2WxAgg(canvas)
++        toolbar.Realize()
++
++        sizer.Add(toolbar, 0, wx.ALL|wx.EXPAND)
++        toolbar.update()
++
++        sizer.Add(canvas, 5, wx.ALL|wx.EXPAND)
++
++        p.SetSizer(sizer)
++        p.Fit()
++        p.Show()
++
++
++        for values, label in zip(view.get_data(), opts['legend']):
++            # if we have only one column to plot, select a bar graph
++            if np.shape(values)[0] == 1:
++                xvalues = list(range(len(values[0])))
++                axes.bar(xvalues, values[0], label=label,
++                        picker=5)
++                axes.set_xticks(xvalues)
++            else:
++                if proj in ('ortho', 'stereo'):
++                    theta, phi, Xsec = cols2matrix(*values)
++                    theta_ticks = np.arange(0, 91, 15)
++                    if proj == 'ortho':
++                        R = np.sin(np.radians(theta))
++                        R_ticks = np.sin(np.radians(theta_ticks))
++                    elif proj == 'stereo':
++                        R = 2 * np.tan(np.radians(theta/2.))
++                        R_ticks = 2 * np.tan(np.radians(theta_ticks/2.))
++                    #R = np.tan(np.radians(theta/2.))
++                    X, Y = np.meshgrid(np.radians(phi), R)
++                    im = axes.pcolormesh(X, Y, Xsec)
++                    axes.set_yticks(R_ticks)
++                    axes.set_yticklabels(theta_ticks)
++
++                    figure.colorbar(im)
++
++                elif proj == 'polar':
++                    values[0] = np.radians(values[0])
++                    axes.plot(*values, label=label, picker=5,
++                            marker=opts['marker'])
++                else:
++                    if scale == 'semilogx':
++                        pltcmd = axes.semilogx
++                    elif scale == 'semilogy':
++                        pltcmd = axes.semilogy
++                    elif scale == 'log':
++                        pltcmd = axes.loglog
++                    else:
++                        pltcmd = axes.plot
++                    pltcmd(*values, label=label, picker=5,
++                        marker=opts['marker'])
++            axes.grid(opts['grid'])
++            axes.set_title(opts['title'])
++            axes.set_xlabel(opts['xlabel'])
++            axes.set_ylabel(opts['ylabel'])
++            axes.set_xlim(*opts['xlim'])
++            axes.set_ylim(*opts['ylim'])
++            if label:
++                axes.legend()
++        axes.autoscale(enable=opts['autoscale'])
++
++
++        # MPL events
++        figure.canvas.mpl_connect('motion_notify_event', self.on_mpl_motion)
++        figure.canvas.mpl_connect('pick_event', self.on_mpl_pick)
++
++        nb.AddPage(p, view.title)
++
++
++    def update_statusbar(self):
++        sb = self.GetStatusBar()
++        menu_id = self.GetMenuBar().FindMenu('Datasets')
++        menu = self.GetMenuBar().GetMenu(menu_id)
++        for item in menu.GetMenuItems():
++            if item.IsChecked():
++                sb.SetStatusText("%s" % item.GetItemLabelText(), 1)
++                break
++
++    def update_title(self):
++        title = "MsSpec Data Viewer"
++        if self.data.title:
++            title += ": " + self.data.title
++        if self._filename:
++            title += " [" + os.path.basename(self._filename) + "]"
++        self.SetTitle(title)
++
++    def on_mpl_motion(self, event):
++        sb = self.GetStatusBar()
++        try:
++            txt = "[{:.3f}, {:.3f}]".format(event.xdata, event.ydata)
++            sb.SetStatusText(txt, 2)
++        except Exception:
++            pass
++
++    def on_mpl_pick(self, event):
++        print(event.artist)
++
++    def on_page_changed(self, event):
++        self.update_statusbar()
+diff -ruN -x .git -x build -x __pycache__ -x '*.so' -x '*.o' -x '*.mod' -x output a/msspec_python3/src/msspec/iodata.py b/msspec_python3/src/msspec/iodata.py
+--- a/msspec_python3/src/msspec/iodata.py	2025-02-26 13:07:29.000000000 +0100
++++ b/msspec_python3/src/msspec/iodata.py	2026-11-18 20:43:29.729444189 +0100
+@@ -70,34 +70,45 @@
+ 
+ import os
+ import sys
+-from distutils.version import LooseVersion
+-from distutils.version import StrictVersion
+ from io import StringIO
+ from datetime import datetime
+ 
+ import ase.io
+ from ase.io.extxyz import read_xyz, write_xyz
+-import h5py
+ import numpy as np
+-from lxml import etree
+ #from matplotlib.backends.backend_wxagg import FigureCanvasWx as FigureCanvas
+-from matplotlib.backends.backend_agg import FigureCanvasAgg
+ #from matplotlib.backends.backend_cairo import FigureCanvasCairo as FigureCanvasAgg
+-from matplotlib.figure import Figure
+-from terminaltables import AsciiTable
+ 
+ import msspec
+ from msspec.misc import LOGGER
+ 
+-try:
+-    import wx.grid
+-    from matplotlib.backends.backend_wxagg import FigureCanvasWxAgg as FigureCanvas
+-    from matplotlib.backends.backend_wxagg import NavigationToolbar2WxAgg
+-    from msspec.msspecgui.msspec.gui.clusterviewer import ClusterViewer
+-    has_gui = True
+-except ImportError:
+-    LOGGER.warning('No modules for GUI')
+-    has_gui = False
++_gui_module = []  # filled once by _load_gui(): [msspec.iodata_gui or None]
++
++
++def _load_gui():
++    """Import the wx-based windows (msspec.iodata_gui) on first use.
++
++    Returns the module, or None when wx or the cluster viewer cannot be imported.
++    """
++    if not _gui_module:
++        try:
++            from msspec import iodata_gui
++        except ImportError:
++            LOGGER.warning('No modules for GUI')
++            iodata_gui = None
++        _gui_module.append(iodata_gui)
++    return _gui_module[0]
++
++
++def __getattr__(name):
++    # PEP 562: the GUI names are loaded only when they are accessed
++    if name == 'has_gui':
++        return _load_gui() is not None
++    if name in ('_GridWindow', '_ParametersWindow', '_DataWindow'):
++        gui = _load_gui()
++        if gui is not None:
++            return getattr(gui, name)
++    raise AttributeError("module {!r} has no attribute {!r}".format(__name__, name))
+ 
+ 
+ def cols2matrix(x, y, z, nx=88*1+1, ny=360*1+1):
+@@ -569,6 +580,7 @@
+             table_data.append(row)
+             _i = i
+ 
++        from terminaltables import AsciiTable
+         table = AsciiTable(table_data)
+         table.outer_border = True
+         table.title = self.title
+@@ -658,6 +670,8 @@
+         :type append: bool
+ 
+         """
++        import h5py
++        from lxml import etree
+         mode = 'a' if append else 'w'
+         titles = [d.title for d in self._datasets]
+         with h5py.File(filename, mode) as fd:
+@@ -731,6 +745,9 @@
+         :return: A Data object.
+         :rtype: :py:class:`iodata.Data`
+         """
++        import h5py
++        from distutils.version import LooseVersion
++        from lxml import etree
+         output = Data()
+         with h5py.File(filename, 'r') as fd:
+             parameters = {}
+@@ -803,10 +820,11 @@
+         """Pops up a grphical window to show all the defined views of the Data object.
+ 
+         """
+-        if has_gui:
+-            app = wx.App(False)
++        gui = _load_gui()
++        if gui is not None:
++            app = gui.wx.App(False)
+             app.SetAppName('MsSpec Data Viewer')
+-            frame = _DataWindow(self)
++            frame = gui._DataWindow(self)
+             frame.Show(True)
+             app.MainLoop()
+         else:
+@@ -871,6 +889,8 @@
+         return data
+ 
+     def get_figure(self):
++        from matplotlib.backends.backend_agg import FigureCanvasAgg
++        from matplotlib.figure import Figure
+         opts = self._plotopts
+ 
+         figure = Figure()
+@@ -942,6 +962,7 @@
+         return figure
+ 
+     def serialize(self):
++        from lxml import etree
+         data = {
+             'name': self.title,
+             'selection_conditions': self._selection_conditions,
+@@ -953,6 +974,7 @@
+         return data
+ 
+     def to_xml(self):
++        from lxml import etree
+         plotopts = self._plotopts.copy()
+         legends = plotopts.pop('legend')
+ 
+@@ -975,6 +997,7 @@
+         return etree.tostring(root, pretty_print=False)
+ 
+     def from_xml(self, xmlstr):
++        from lxml import etree
+         root = etree.fromstring(xmlstr)
+         self.title = root.attrib['name']
+         #self._plotopts['title'] = root.attrib['title']
+@@ -1023,437 +1046,6 @@
+         s += '\tconditions : %s\n' % str(self._selection_conditions)
+         return s
+ 
+-if has_gui:
+-    class _GridWindow(wx.Frame):
+-        def __init__(self, dset, parent=None):
+-            title = 'Data: ' + dset.title
+-            wx.Frame.__init__(self, parent, title=title, size=(640, 480))
+-            self.create_grid(dset)
+-
+-        def create_grid(self, dset):
+-            grid = wx.grid.Grid(self, -1)
+-            grid.CreateGrid(len(dset), len(dset.columns()))
+-            for ic, c in enumerate(dset.columns()):
+-                grid.SetColLabelValue(ic, c)
+-                for iv, v in enumerate(dset[c]):
+-                    grid.SetCellValue(iv, ic, str(v))
+-
+-    class _ParametersWindow(wx.Frame):
+-        def __init__(self, dset, parent=None):
+-            title = 'Parameters: ' + dset.title
+-            wx.Frame.__init__(self, parent, title=title, size=(400, 480))
+-            self.create_tree(dset)
+-
+-        def create_tree(self, dset):
+-            datatree = {}
+-            for p in dset.parameters():
+-                is_hidden = p.get('hidden', "False")
+-                if is_hidden == "True":
+-                    continue
+-                group = datatree.get(p['group'], [])
+-                #strval = str(p['value'] * p['unit'] if p['unit'] else p['value'])
+-                #group.append("{:s} = {:s}".format(p['name'], strval))
+-                group.append("{} = {} {}".format(p['name'], p['value'], p['unit']))
+-                datatree[p['group']] = group
+-
+-            tree = wx.TreeCtrl(self, -1)
+-            root = tree.AddRoot('Parameters')
+-
+-            for key in list(datatree.keys()):
+-                item0 = tree.AppendItem(root, key)
+-                for item in datatree[key]:
+-                    tree.AppendItem(item0, item)
+-            tree.ExpandAll()
+-            tree.SelectItem(root)
+-
+-    class _DataWindow(wx.Frame):
+-        def __init__(self, data):
+-            assert isinstance(data, (Data, DataSet))
+-
+-            if isinstance(data, DataSet):
+-                dset = data
+-                data = Data()
+-                data.first = dset
+-            self.data = data
+-            self._filename = None
+-            self._current_dset = None
+-
+-            wx.Frame.__init__(self, None, title="", size=(640, 480))
+-
+-            self.Bind(wx.EVT_CLOSE, self.on_close)
+-
+-            # Populate the menu bar
+-            self.create_menu()
+-
+-            # Create the status bar
+-            statusbar = wx.StatusBar(self, -1)
+-            statusbar.SetFieldsCount(3)
+-            statusbar.SetStatusWidths([-2, -1, -1])
+-            self.SetStatusBar(statusbar)
+-
+-            # Add the notebook to hold all graphs
+-            self.notebooks = {}
+-            sizer = wx.BoxSizer(wx.VERTICAL)
+-            #sizer.Add(self.notebook)
+-            self.SetSizer(sizer)
+-
+-            self.Bind(wx.EVT_NOTEBOOK_PAGE_CHANGED, self.on_page_changed)
+-
+-            self.create_notebooks()
+-
+-            self.update_title()
+-
+-        def create_notebooks(self):
+-            for key in list(self.notebooks.keys()):
+-                nb = self.notebooks.pop(key)
+-                nb.Destroy()
+-
+-            for dset in self.data:
+-                nb = wx.Notebook(self, -1)
+-                self.notebooks[dset.title] = nb
+-                #self.GetSizer().Add(nb, 1, wx.ALL|wx.EXPAND)
+-                self.GetSizer().Add(nb, proportion=1, flag=wx.ALL|wx.EXPAND)
+-                for view in dset.views():
+-                    self.create_page(nb, view)
+-
+-            self.create_menu()
+-
+-            self.show_dataset(self.data[0].title)
+-
+-
+-        def create_menu(self):
+-            menubar = wx.MenuBar()
+-            menu1 = wx.Menu()
+-            menu1.Append(110, "Open\tCtrl+O")
+-            menu1.Append(120, "Save\tCtrl+S")
+-            menu1.Append(130, "Save as...")
+-            menu1.Append(140, "Export\tCtrl+E")
+-            menu1.AppendSeparator()
+-            menu1.Append(199, "Close\tCtrl+Q")
+-
+-            menu2 = wx.Menu()
+-            for i, dset in enumerate(self.data):
+-                menu_id = 201 + i
+-                menu2.AppendRadioItem(menu_id, dset.title)
+-                self.Bind(wx.EVT_MENU, self.on_menu_dataset, id=menu_id)
+-
+-            self.Bind(wx.EVT_MENU, self.on_open, id=110)
+-            self.Bind(wx.EVT_MENU, self.on_save, id=120)
+-            self.Bind(wx.EVT_MENU, self.on_saveas, id=130)
+-            self.Bind(wx.EVT_MENU, self.on_export, id=140)
+-            self.Bind(wx.EVT_MENU, self.on_close, id=199)
+-
+-
+-            menu3 = wx.Menu()
+-            menu3.Append(301, "Data")
+-            menu3.Append(302, "Cluster")
+-            menu3.Append(303, "Parameters")
+-
+-            self.Bind(wx.EVT_MENU, self.on_viewdata, id=301)
+-            self.Bind(wx.EVT_MENU, self.on_viewcluster, id=302)
+-            self.Bind(wx.EVT_MENU, self.on_viewparameters, id=303)
+-
+-            menubar.Append(menu1, "&File")
+-            menubar.Append(menu2, "&Datasets")
+-            menubar.Append(menu3, "&View")
+-            self.SetMenuBar(menubar)
+-
+-        def on_open(self, event):
+-            if self.data.is_dirty():
+-                mbx = wx.MessageDialog(self, ('Displayed data is unsaved. Do '
+-                                            'you wish to save before opening'
+-                                            'another file ?'),
+-                                    'Warning: Unsaved data',
+-                                    wx.YES_NO | wx.ICON_WARNING)
+-                if mbx.ShowModal() == wx.ID_YES:
+-                    self.on_saveas(wx.Event())
+-                mbx.Destroy()
+-
+-            wildcard = "HDF5 files (*.hdf5)|*.hdf5"
+-            dlg = wx.FileDialog(
+-                self, message="Open a file...", defaultDir=os.getcwd(),
+-                defaultFile="", wildcard=wildcard, style=wx.FD_OPEN
+-                )
+-
+-            if dlg.ShowModal() == wx.ID_OK:
+-                path = dlg.GetPath()
+-                self._filename = path
+-                self.data = Data.load(path)
+-                self.create_notebooks()
+-            dlg.Destroy()
+-            self.update_title()
+-
+-        def on_save(self, event):
+-            if self._filename:
+-                if self.data.is_dirty():
+-                    self.data.save(self._filename)
+-            else:
+-                self.on_saveas(event)
+-
+-        def on_saveas(self, event):
+-            overwrite = True
+-            wildcard = "HDF5 files (*.hdf5)|*.hdf5|All files (*.*)|*.*"
+-            dlg = wx.FileDialog(
+-                self, message="Save file as ...", defaultDir=os.getcwd(),
+-                defaultFile='{}.hdf5'.format(self.data.title.replace(' ','_')),
+-                wildcard=wildcard, style=wx.FD_SAVE)
+-            dlg.SetFilterIndex(0)
+-
+-            if dlg.ShowModal() == wx.ID_OK:
+-                path = dlg.GetPath()
+-                if os.path.exists(path):
+-                    mbx = wx.MessageDialog(self, ('This file already exists. '
+-                                                'Do you wish to overwrite it ?'),
+-                                        'Warning: File exists',
+-                                        wx.YES_NO | wx.ICON_WARNING)
+-                    if mbx.ShowModal() == wx.ID_NO:
+-                        overwrite = False
+-                    mbx.Destroy()
+-                if overwrite:
+-                    self.data.save(path)
+-                    self._filename = path
+-            dlg.Destroy()
+-            self.update_title()
+-
+-        def on_export(self, event):
+-            overwrite = True
+-            dlg = wx.DirDialog(
+-                self, message="Export data...", defaultPath=os.getcwd(),
+-                style=wx.DD_DEFAULT_STYLE)
+-
+-            if dlg.ShowModal() == wx.ID_OK:
+-                path = dlg.GetPath()
+-                if os.listdir(path):
+-                    mbx = wx.MessageDialog(self,
+-                                        ('This folder is not empty. '
+-                                            'Exporting tour data here may '
+-                                            'overwrite its content. Do you wish '
+-                                            'to continue ?'),
+-                                        'Warning: Folder is not empty',
+-                                        wx.YES_NO | wx.ICON_WARNING)
+-                    if mbx.ShowModal() == wx.ID_NO:
+-                        overwrite = False
+-                    mbx.Destroy()
+-                self.data.export(path, overwrite)
+-            dlg.Destroy()
+-
+-        def on_viewdata(self, event):
+-            dset = self.data[self._current_dset]
+-            frame = _GridWindow(dset, parent=self)
+-            frame.Show()
+-
+-        def on_viewcluster(self, event):
+-            win = wx.Frame(None, size=wx.Size(480, 340))
+-            cluster_viewer = ClusterViewer(win, size=wx.Size(480, 340))
+-
+-            dset = self.data[self._current_dset]
+-            #s = StringIO()
+-            #s.write(dset.get_parameter(group='Cluster', name='cluster')['value'])
+-            #_s = dset.get_parameter(group='Cluster', name='cluster')['value']
+-            #print(_s)
+-            # rewind to the begining of the string
+-            #s.seek(0)
+-            #atoms = ase.io.read(s, format='xyz')
+-            atoms = dset.get_cluster()
+-            cluster_viewer.set_atoms(atoms, rescale=True, center=True)
+-            cluster_viewer.rotate_atoms(0., 180.)
+-            cluster_viewer.rotate_atoms(-45., -45.)
+-            #cluster_viewer.show_emitter(True)
+-            win.Show()
+-
+-        def on_viewparameters(self, event):
+-            dset = self.data[self._current_dset]
+-            frame = _ParametersWindow(dset, parent=self)
+-            frame.Show()
+-
+-        def on_close(self, event):
+-            if self.data.is_dirty():
+-                mbx = wx.MessageDialog(self, ('Displayed data is unsaved. Do you '
+-                                            'really want to quit ?'),
+-                                    'Warning: Unsaved data',
+-                                    wx.YES_NO | wx.ICON_WARNING)
+-                if mbx.ShowModal() == wx.ID_NO:
+-                    mbx.Destroy()
+-                    return
+-            self.Destroy()
+-
+-
+-        def on_menu_dataset(self, event):
+-            menu_id = event.GetId()
+-            dset_name = self.GetMenuBar().FindItemById(menu_id).GetItemLabelText()
+-            self.show_dataset(dset_name)
+-
+-
+-        def show_dataset(self, name):
+-            for nb in list(self.notebooks.values()):
+-                nb.Hide()
+-            self.notebooks[name].Show()
+-            self.Layout()
+-            self.update_statusbar()
+-            self._current_dset = name
+-
+-        def create_page(self, nb, view):
+-            # Get the matplotlib figure
+-            figure = view.get_figure()
+-
+-            # Create a panel
+-            p = wx.Panel(nb, -1)
+-
+-            # Create a matplotlib canvas for the figure
+-            canvas = FigureCanvas(p, -1, figure)
+-            sizer = wx.BoxSizer(wx.VERTICAL)
+-
+-            toolbar = NavigationToolbar2WxAgg(canvas)
+-            toolbar.Realize()
+-
+-            #sizer.Add(toolbar, 0, wx.ALL|wx.EXPAND)
+-            sizer.Add(toolbar, proportion=0, flag=wx.ALL|wx.EXPAND)
+-            toolbar.update()
+-
+-            #sizer.Add(canvas, 5, wx.ALL|wx.EXPAND)
+-            sizer.Add(canvas, proportion=1, flag=wx.ALL|wx.EXPAND)
+-
+-            p.SetSizer(sizer)
+-            p.Fit()
+-            p.Show()
+-
+-            # MPL events
+-            figure.canvas.mpl_connect('motion_notify_event', self.on_mpl_motion)
+-            figure.canvas.mpl_connect('pick_event', self.on_mpl_pick)
+-
+-            nb.AddPage(p, view.title)
+-            canvas.draw()
+-
+-
+-        def OLDcreate_page(self, nb, view):
+-            opts = view._plotopts
+-            p = wx.Panel(nb, -1)
+-
+-            figure = Figure()
+-
+-            axes = None
+-            proj = opts['projection']
+-            scale = opts['scale']
+-            if proj == 'rectilinear':
+-                axes = figure.add_subplot(111, projection='rectilinear')
+-            elif proj in ('polar', 'ortho', 'stereo'):
+-                axes = figure.add_subplot(111, projection='polar')
+-
+-            canvas = FigureCanvas(p, -1, figure)
+-            sizer = wx.BoxSizer(wx.VERTICAL)
+-
+-            toolbar = NavigationToolbar2WxAgg(canvas)
+-            toolbar.Realize()
+-
+-            sizer.Add(toolbar, 0, wx.ALL|wx.EXPAND)
+-            toolbar.update()
+-
+-            sizer.Add(canvas, 5, wx.ALL|wx.EXPAND)
+-
+-            p.SetSizer(sizer)
+-            p.Fit()
+-            p.Show()
+-
+-
+-            for values, label in zip(view.get_data(), opts['legend']):
+-                # if we have only one column to plot, select a bar graph
+-                if np.shape(values)[0] == 1:
+-                    xvalues = list(range(len(values[0])))
+-                    axes.bar(xvalues, values[0], label=label,
+-                            picker=5)
+-                    axes.set_xticks(xvalues)
+-                else:
+-                    if proj in ('ortho', 'stereo'):
+-                        theta, phi, Xsec = cols2matrix(*values)
+-                        theta_ticks = np.arange(0, 91, 15)
+-                        if proj == 'ortho':
+-                            R = np.sin(np.radians(theta))
+-                            R_ticks = np.sin(np.radians(theta_ticks))
+-                        elif proj == 'stereo':
+-                            R = 2 * np.tan(np.radians(theta/2.))
+-                            R_ticks = 2 * np.tan(np.radians(theta_ticks/2.))
+-                        #R = np.tan(np.radians(theta/2.))
+-                        X, Y = np.meshgrid(np.radians(phi), R)
+-                        im = axes.pcolormesh(X, Y, Xsec)
+-                        axes.set_yticks(R_ticks)
+-                        axes.set_yticklabels(theta_ticks)
+-
+-                        figure.colorbar(im)
+-
+-                    elif proj == 'polar':
+-                        values[0] = np.radians(values[0])
+-                        axes.plot(*values, label=label, picker=5,
+-                                marker=opts['marker'])
+-                    else:
+-                        if scale == 'semilogx':
+-                            pltcmd = axes.semilogx
+-                        elif scale == 'semilogy':
+-                            pltcmd = axes.semilogy
+-                        elif scale == 'log':
+-                            pltcmd = axes.loglog
+-                        else:
+-                            pltcmd = axes.plot
+-                        pltcmd(*values, label=label, picker=5,
+-                            marker=opts['marker'])
+-                axes.grid(opts['grid'])
+-                axes.set_title(opts['title'])
+-                axes.set_xlabel(opts['xlabel'])
+-                axes.set_ylabel(opts['ylabel'])
+-                axes.set_xlim(*opts['xlim'])
+-                axes.set_ylim(*opts['ylim'])
+-                if label:
+-                    axes.legend()
+-            axes.autoscale(enable=opts['autoscale'])
+-
+-
+-            # MPL events
+-            figure.canvas.mpl_connect('motion_notify_event', self.on_mpl_motion)
+-            figure.canvas.mpl_connect('pick_event', self.on_mpl_pick)
+-
+-            nb.AddPage(p, view.title)
+-
+-
+-        def update_statusbar(self):
+-            sb = self.GetStatusBar()
+-            menu_id = self.GetMenuBar().FindMenu('Datasets')
+-            menu = self.GetMenuBar().GetMenu(menu_id)
+-            for item in menu.GetMenuItems():
+-                if item.IsChecked():
+-                    sb.SetStatusText("%s" % item.GetItemLabelText(), 1)
+-                    break
+-
+-        def update_title(self):
+-            title = "MsSpec Data Viewer"
+-            if self.data.title:
+-                title += ": " + self.data.title
+-            if self._filename:
+-                title += " [" + os.path.basename(self._filename) + "]"
+-            self.SetTitle(title)
+-
+-        def on_mpl_motion(self, event):
+-            sb = self.GetStatusBar()
+-            try:
+-                txt = "[{:.3f}, {:.3f}]".format(event.xdata, event.ydata)
+-                sb.SetStatusText(txt, 2)
+-            except Exception:
+-                pass
+-
+-        def on_mpl_pick(self, event):
+-            print(event.artist)
+-
+-        def on_page_changed(self, event):
+-            self.update_statusbar()
+-
+-
+-
+-
+-
+-
+-
+-
+-
+-
+-
+ if __name__ == "__main__":
+     if False:
+         data = Data('all my data')
+diff -ruN -x .git -x build -x __pycache__ -x '*.so' -x '*.o' -x '*.mod' -x output a/msspec_python3/src/msspec/spec/fortran/phd_mi_noso_nosp_nosym/axb_mat_ms_la.f b/msspec_python3/src/msspec/spec/fortran/phd_mi_noso_nosp_nosym/axb_mat_ms_la.f
+--- a/msspec_python3/src/msspec/spec/fortran/phd_mi_noso_nosp_nosym/axb_mat_ms_la.f	2025-02-26 13:07:29.000000000 +0100
++++ b/msspec_python3/src/msspec/spec/fortran/phd_mi_noso_nosp_nosym/axb_mat_ms_la.f	2026-11-18 21:54:10.054734636 +0100
+@@ -29,17 +29,66 @@
+       REAL*8 PI,ATTKJ,GNT(0:N_GAUNT),XKJ,YKJ,ZKJ,RKJ,ZDKJ,KRKJ
+ C
+       INTEGER IPIV(LINMAX*NATCLU_M)
++      INTEGER IRHSRD,NTOT,NRHS,KCOL,ENVLEN,ENVSTAT
++      INTEGER IGPUM,GPUMLEN,GPUELEN,GPUESTAT,GPUN
++      INTEGER IGPUDIM(12)
++      SAVE IRHSRD
++      SAVE IGPUM,GPUMLEN
+ C
+       CHARACTER*1 CH
++      CHARACTER*16 ENVVAL
++      CHARACTER*256 GPUENV,GPUMETH
++      SAVE GPUMETH
+ C
+       DATA PI /3.1415926535898D0/
++      DATA IRHSRD /-1/
++      DATA IGPUM /-1/
+ C
++C
++C   Switch MSSPEC_V2_GPU_METHOD (read once). If it is set and not empty,
++C     the GPU hook MSSPEC_V2_GPU_SOLVE is called before the CPU matrix
++C     build, and this routine returns. If it is unset, nothing changes.
++C
++      IF(IGPUM.LT.0) THEN
++        GPUELEN=0
++        GPUESTAT=1
++        GPUENV=' '
++        CALL GET_ENVIRONMENT_VARIABLE('MSSPEC_V2_GPU_METHOD',
++     1                                GPUENV,GPUELEN,GPUESTAT)
++        IGPUM=0
++        IF((GPUESTAT.EQ.0).AND.(GPUELEN.GT.0)) THEN
++          IGPUM=1
++          GPUMLEN=MIN(GPUELEN,256)
++          GPUMETH=GPUENV
++        ENDIF
++      ENDIF
++      IF(IGPUM.EQ.1) THEN
++        CALL V2_GPU_INV_MAT(JE,TAU,GPUMETH(1:GPUMLEN))
++        RETURN
++      ENDIF
++C
++      CALL V2PT_START(1)
+       ONEC=(1.D0,0.D0)
+       IC=(0.D0,1.D0)
+       ZEROC=(0.D0,0.D0)
+       IBESS=3
+       CH='N'
+ C
++C   Switch MSSPEC_V2_RHS_REDUCTION (read once): 1 = solve only the
++C     right-hand sides whose TAU columns are read later, 0 = stock.
++C
++      IF(IRHSRD.LT.0) THEN
++        ENVLEN=0
++        ENVSTAT=1
++        ENVVAL=' '
++        CALL GET_ENVIRONMENT_VARIABLE('MSSPEC_V2_RHS_REDUCTION',
++     1                                ENVVAL,ENVLEN,ENVSTAT)
++        IRHSRD=0
++        IF((ENVSTAT.EQ.0).AND.(ENVLEN.EQ.1)) THEN
++          IF(ENVVAL(1:1).EQ.'1') IRHSRD=1
++        ENDIF
++      ENDIF
++C
+ C  Construction of the multiple scattering matrix MS = (I-GoT). 
+ C    Elements are stored using a linear index LINJ representing 
+ C    (J,LJ)
+@@ -139,16 +188,72 @@
+ C     is used where b is the block column corresponding to 
+ C     the absorber 0 in the identity matrix. x is then TAU^{j 0}.
+ C
++      CALL V2PT_STOP(1)
++      CALL V2PT_START(2)
+       CALL ZGETRF(JLIN,JLIN,SM,LINMAX*NATCLU_M,IPIV,INFO1)
+       IF(INFO1.NE.0) THEN
+          WRITE(6,*) '     --->  INFO1 =',INFO1
++      ELSEIF(IRHSRD.EQ.1) THEN
++C   Reduced: the absorber (type 1, one atom, columns 1..LW2) has the
++C     linear index LJ*LJ+LJ+1+MJ. Only the LJ of the LF loop of
++C     phddif_mi.f (DO LF=LF1,LF2,ISTEP_LF) are read later, so only those
++C     columns are packed into IN(:,1..NRHS) and solved.
++        NTOT=JLIN
++        NRHS=0
++        DO LJ=0,LMAX(1,JE)
++          IF((LJ.GE.LF1).AND.(LJ.LE.LF2).AND.
++     1       (MOD(LJ-LF1,ISTEP_LF).EQ.0)) THEN
++            DO MJ=-LJ,LJ
++              NRHS=NRHS+1
++              DO KLIN=1,NTOT
++                IN(KLIN,NRHS)=ZEROC
++              ENDDO
++              IN(LJ*LJ+LJ+1+MJ,NRHS)=ONEC
++            ENDDO
++          ENDIF
++        ENDDO
++        CALL ZGETRS(CH,NTOT,NRHS,SM,LINMAX*NATCLU_M,IPIV,
++     1              IN,LINMAX*NATCLU_M,INFO)
+       ELSE
+         CALL ZGETRS(CH,JLIN,LW2,SM,LINMAX*NATCLU_M,IPIV,
+      1              IN,LINMAX*NATCLU_M,INFO)
+       ENDIF
++      CALL V2PT_STOP(2)
+ C
+ C   Storage of the Tau matrix
+ C
++      CALL V2PT_START(5)
++      IF(IRHSRD.EQ.1) THEN
++        KCOL=0
++        DO LJ=0,LMAX(1,JE)
++          ILJ=LJ*LJ+LJ+1
++          TLJ=DCMPLX(TL(LJ,1,1,JE))
++          IF((LJ.GE.LF1).AND.(LJ.LE.LF2).AND.
++     1       (MOD(LJ-LF1,ISTEP_LF).EQ.0)) THEN
++            DO MJ=-LJ,LJ
++              INDJ=ILJ+MJ
++              KCOL=KCOL+1
++              KLIN=0
++              DO KTYP=1,N_PROT
++                NBTYPK=NATYP(KTYP)
++                LMK=LMAX(KTYP,JE)
++                DO KNUM=1,NBTYPK
++                  KATL=NCORR(KNUM,KTYP)
++                  DO LK=0,LMK
++                    ILK=LK*LK+LK+1
++                    DO MK=-LK,LK
++                      INDK=ILK+MK
++                      KLIN=KLIN+1
++                      TAU(INDK,INDJ,KATL)=CMPLX(IN(KLIN,KCOL)*TLJ)
++                    ENDDO
++                  ENDDO
++                ENDDO
++              ENDDO
++            ENDDO
++          ENDIF
++        ENDDO
++      ENDIF
++      IF(IRHSRD.NE.1) THEN
+       JLIN=0
+       DO JTYP=1,N_PROT
+         NBTYPJ=NATYP(JTYP)
+@@ -189,7 +294,9 @@
+ C
+         ENDDO
+       ENDDO
++      ENDIF
+ C
++      CALL V2PT_STOP(5)
+       RETURN
+ C
+       END
+diff -ruN -x .git -x build -x __pycache__ -x '*.so' -x '*.o' -x '*.mod' -x output a/msspec_python3/src/msspec/spec/fortran/phd_mi_noso_nosp_nosym/main.f b/msspec_python3/src/msspec/spec/fortran/phd_mi_noso_nosp_nosym/main.f
+--- a/msspec_python3/src/msspec/spec/fortran/phd_mi_noso_nosp_nosym/main.f	2025-02-26 13:07:29.000000000 +0100
++++ b/msspec_python3/src/msspec/spec/fortran/phd_mi_noso_nosp_nosym/main.f	2026-11-18 19:26:16.641004700 +0100
+@@ -10,6 +10,7 @@
+ CF2PY   INTEGER, INTENT(IN,COPY) :: NTEMP_M_, NODES_EX_M_, NSPIN_M_, NTH_M_, NPH_M_, NDIM_M_
+ CF2PY   INTEGER, INTENT(IN,COPY) :: N_TILT_M_, N_ORD_M_, NPATH_M_, NGR_M_
+ 
++        CALL V2PT_RESET()
+         CALL ALLOCATION(NATP_M_, NATCLU_M_, NAT_EQ_M_, N_CL_L_M_, 
+      &  NE_M_, NL_M_, LI_M_, NEMET_M_, NO_ST_M_, NDIF_M_, NSO_M_, 
+      &  NTEMP_M_, NODES_EX_M_, NSPIN_M_, NTH_M_, NPH_M_, NDIM_M_, 
+@@ -17,5 +18,6 @@
+ 
+         CALL MAIN_PHD_NS_MI()
+         CALL CLOSE_ALL_FILES()
++        CALL V2PT_WRITE()
+ 
+       END SUBROUTINE RUN
+diff -ruN -x .git -x build -x __pycache__ -x '*.so' -x '*.o' -x '*.mod' -x output a/msspec_python3/src/msspec/spec/fortran/phd_mi_noso_nosp_nosym/main_phd_ns_mi.f b/msspec_python3/src/msspec/spec/fortran/phd_mi_noso_nosp_nosym/main_phd_ns_mi.f
+--- a/msspec_python3/src/msspec/spec/fortran/phd_mi_noso_nosp_nosym/main_phd_ns_mi.f	2025-02-26 13:07:29.000000000 +0100
++++ b/msspec_python3/src/msspec/spec/fortran/phd_mi_noso_nosp_nosym/main_phd_ns_mi.f	2026-11-18 19:26:16.620004540 +0100
+@@ -1293,7 +1293,9 @@
+         JFF=1
+         IF(ISPIN.EQ.0) THEN
+           IF(SPECTRO.NE.'XAS') THEN
++            CALL V2PT_START(4)
+             CALL TREAT_PHD(ISOM,NFICHLEC,JFF,NP)
++            CALL V2PT_STOP(4)
+           ELSE
+ c            CALL TREAT_XAS(ISOM,NFICHLEC,NP)
+           ENDIF   
+diff -ruN -x .git -x build -x __pycache__ -x '*.so' -x '*.o' -x '*.mod' -x output a/msspec_python3/src/msspec/spec/fortran/phd_mi_noso_nosp_nosym/phase_timer.f b/msspec_python3/src/msspec/spec/fortran/phd_mi_noso_nosp_nosym/phase_timer.f
+--- a/msspec_python3/src/msspec/spec/fortran/phd_mi_noso_nosp_nosym/phase_timer.f	1970-01-01 00:00:00.000000000 +0000
++++ b/msspec_python3/src/msspec/spec/fortran/phd_mi_noso_nosp_nosym/phase_timer.f	2026-11-18 19:25:37.686707013 +0100
+@@ -0,0 +1,73 @@
++C=======================================================================
++C  V2 phase timers (wall clock, SYSTEM_CLOCK). Used only for profiling.
++C  Phase ids: 1 matrix build, 2 solve (ZGETRF+ZGETRS), 3 angle loop
++C  (includes 4), 4 output writing, 5 TAU copy-out.
++C  V2PT_WRITE writes one line per phase (name seconds calls) to the file
++C  named by the environment variable MSSPEC_V2_PHASE_LOG. If the variable
++C  is unset or empty, nothing is written.
++C=======================================================================
++      SUBROUTINE V2PT_RESET()
++      IMPLICIT NONE
++      INTEGER*8 V2PT_T0(5), V2PT_TOT(5), V2PT_NC(5), V2PT_RATE
++      COMMON /V2PTCM/ V2PT_T0, V2PT_TOT, V2PT_NC, V2PT_RATE
++      INTEGER K
++      DO K=1,5
++        V2PT_T0(K)=0
++        V2PT_TOT(K)=0
++        V2PT_NC(K)=0
++      ENDDO
++      V2PT_RATE=0
++      RETURN
++      END
++
++      SUBROUTINE V2PT_START(K)
++      IMPLICIT NONE
++      INTEGER K
++      INTEGER*8 V2PT_T0(5), V2PT_TOT(5), V2PT_NC(5), V2PT_RATE
++      COMMON /V2PTCM/ V2PT_T0, V2PT_TOT, V2PT_NC, V2PT_RATE
++      INTEGER*8 CNT, RATE, CMAX
++      CALL SYSTEM_CLOCK(CNT, RATE, CMAX)
++      V2PT_RATE=RATE
++      V2PT_T0(K)=CNT
++      RETURN
++      END
++
++      SUBROUTINE V2PT_STOP(K)
++      IMPLICIT NONE
++      INTEGER K
++      INTEGER*8 V2PT_T0(5), V2PT_TOT(5), V2PT_NC(5), V2PT_RATE
++      COMMON /V2PTCM/ V2PT_T0, V2PT_TOT, V2PT_NC, V2PT_RATE
++      INTEGER*8 CNT, RATE, CMAX
++      CALL SYSTEM_CLOCK(CNT, RATE, CMAX)
++      V2PT_TOT(K)=V2PT_TOT(K)+(CNT-V2PT_T0(K))
++      V2PT_NC(K)=V2PT_NC(K)+1
++      RETURN
++      END
++
++      SUBROUTINE V2PT_WRITE()
++      IMPLICIT NONE
++      INTEGER*8 V2PT_T0(5), V2PT_TOT(5), V2PT_NC(5), V2PT_RATE
++      COMMON /V2PTCM/ V2PT_T0, V2PT_TOT, V2PT_NC, V2PT_RATE
++      CHARACTER*512 FNAME
++      CHARACTER*24 NAMES(5)
++      INTEGER FLEN, STAT, IU, K
++      DOUBLE PRECISION RATED
++      DATA NAMES /'fortran_matrix_build', 'fortran_solve',
++     &            'fortran_angle_loop', 'fortran_output_write',
++     &            'fortran_tau_copyout'/
++      FLEN=0
++      STAT=1
++      CALL GET_ENVIRONMENT_VARIABLE('MSSPEC_V2_PHASE_LOG', FNAME,
++     &                              FLEN, STAT)
++      IF((STAT.NE.0).OR.(FLEN.LE.0)) RETURN
++      RATED=DBLE(V2PT_RATE)
++      IF(RATED.LE.0.D0) RATED=1.D0
++      OPEN(NEWUNIT=IU, FILE=FNAME(1:FLEN), STATUS='REPLACE',
++     &     ACTION='WRITE')
++      DO K=1,5
++        WRITE(IU,'(A,1X,F0.9,1X,I0)') NAMES(K)(1:LEN_TRIM(NAMES(K))),
++     &    DBLE(V2PT_TOT(K))/RATED, V2PT_NC(K)
++      ENDDO
++      CLOSE(IU)
++      RETURN
++      END
+diff -ruN -x .git -x build -x __pycache__ -x '*.so' -x '*.o' -x '*.mod' -x output a/msspec_python3/src/msspec/spec/fortran/phd_mi_noso_nosp_nosym/phddif_mi.f b/msspec_python3/src/msspec/spec/fortran/phd_mi_noso_nosp_nosym/phddif_mi.f
+--- a/msspec_python3/src/msspec/spec/fortran/phd_mi_noso_nosp_nosym/phddif_mi.f	2025-02-26 13:07:29.000000000 +0100
++++ b/msspec_python3/src/msspec/spec/fortran/phd_mi_noso_nosp_nosym/phddif_mi.f	2026-11-18 19:26:16.602004402 +0100
+@@ -355,6 +355,7 @@
+         IF(I_TEST.EQ.2) GOTO 666
+         CALL INV_MAT_MS(JE,TAU)
+  666    CONTINUE
++           CALL V2PT_START(3)
+ C
+ C    Calculation of the Photoelectron Diffraction formula
+ C
+@@ -948,6 +949,7 @@
+ C
+            ENDDO
+ C
++           CALL V2PT_START(4)
+            IF(SPECTRO.EQ.'APC') GOTO 222
+            IF(IDICHR.EQ.0) THEN
+              IF(ISOM.EQ.2) THEN
+@@ -986,6 +988,7 @@
+              ENDIF
+            ENDIF
+  222       CONTINUE
++           CALL V2PT_STOP(4)
+ C
+ C     End of the loop on the scanned angle
+ C
+@@ -996,6 +999,7 @@
+ C     End of the loop on the fixed angle
+ C
+          ENDDO
++         CALL V2PT_STOP(3)
+ C
+ C     End of the loop on the energy
+ C
+@@ -1027,10 +1031,14 @@
+ c      IF(((NEMET.GT.1).OR.(NPLAN.GT.1)).AND.(ISOM.EQ.0)) THEN
+       IF(((NEMET.GT.1).OR.(NPLAN.GT.0)).AND.(ISOM.EQ.0)) THEN
+         NP=0
++        CALL V2PT_START(4)
+         CALL TREAT_PHD(ISOM,NFICHLEC,JFICH,NP)
++        CALL V2PT_STOP(4)
+       ENDIF
+       IF(I_EXT.EQ.2) THEN
++         CALL V2PT_START(4)
+          CALL WEIGHT_SUM(ISOM,I_EXT,0,1)
++         CALL V2PT_STOP(4)
+       ENDIF
+       GOTO 7
+    6  WRITE(IUO1,55)
+diff -ruN -x .git -x build -x __pycache__ -x '*.so' -x '*.o' -x '*.mod' -x output a/msspec_python3/src/msspec/spec/fortran/phd_mi_noso_nosp_nosym/v2_gpu_inv_mat.f b/msspec_python3/src/msspec/spec/fortran/phd_mi_noso_nosp_nosym/v2_gpu_inv_mat.f
+--- a/msspec_python3/src/msspec/spec/fortran/phd_mi_noso_nosp_nosym/v2_gpu_inv_mat.f	1970-01-01 00:00:00.000000000 +0000
++++ b/msspec_python3/src/msspec/spec/fortran/phd_mi_noso_nosp_nosym/v2_gpu_inv_mat.f	2026-11-18 22:35:09.531485204 +0100
+@@ -0,0 +1,373 @@
++C
++C=======================================================================
++C
++      SUBROUTINE V2_GPU_INV_MAT(JE,TAU,METH)
++C
++C   V2 GPU path (step 1b). Called from INV_MAT_MS when the environment
++C     variable MSSPEC_V2_GPU_METHOD is set and not empty. The CPU branch
++C     of INV_MAT_MS is not run in that case.
++C
++C   Host side (this routine), with the same formulas as the CPU branch of
++C     INV_MAT_MS: the row descriptors, the column descriptors, the pair
++C     functions YPAIR, HPAIR, ATTPAIR of each column atom, the Gaunt cache
++C     GNTC (as in the earlier GPU version, ped_assembly), and the reduced right-hand sides B (the
++C     absorber columns LF1..LF2 step ISTEP_LF). These are small per-pair
++C     arrays. The n x n matrix is NOT built here.
++C   GPU side (v2/src/solver/msspec_v2_gpu.cu): the matrix is assembled on
++C     the device in FP32, factored with cuSOLVER, and the solution X is
++C     returned in FP64. TAU is then copied out as in the IRHSRD=1 branch
++C     of INV_MAT_MS.
++C
++      USE DIM_MOD
++      USE COOR_MOD
++      USE INIT_L_MOD
++      USE TRANS_MOD
++C
++      IMPLICIT NONE
++C
++      INTEGER JE
++      COMPLEX TAU(LINMAX,LINFMAX,NATCLU_M)
++      CHARACTER*(*) METH
++C
++      COMPLEX*16 ONEC,IC,ZEROC,TLJ,TLK,EXPKJ
++      COMPLEX*16 YLM(0:2*NL_M,-2*NL_M:2*NL_M),HL1(0:2*NL_M)
++      REAL*8 GNT(0:N_GAUNT)
++      REAL*8 XKJ,YKJ,ZKJ,RKJ,ZDKJ,KRKJ
++      REAL XJ,YJ,ZJ
++      INTEGER IBESS,NL2,N,NRHS,NATOMS,V2MAXLK,V2GL,V2MAXL,JOFF
++      INTEGER NCOLJ,IFIRST,KCOL,KLIN
++      INTEGER LJ,MJ,LK,MK,L,M,ILJ,ILK,INDJ,INDK
++      INTEGER JTYP,JNUM,KTYP,KNUM,KATL,JATL,LMJ,LMK
++      INTEGER IGPUB,IBLEN,IBSTAT
++      CHARACTER*16 GBENV
++      COMPLEX*16, ALLOCATABLE :: SMH(:,:)
++C
++      INTEGER, ALLOCATABLE :: IROWA(:),IROWL(:),IROWM(:),IROWG(:)
++      INTEGER, ALLOCATABLE :: ICOLL(:),ICOLM(:),ICOLI(:)
++      COMPLEX*16, ALLOCATABLE :: ROWT(:),YPAIR(:,:,:),HPAIR(:,:)
++      COMPLEX*16, ALLOCATABLE :: B(:,:),X(:,:)
++      REAL*8, ALLOCATABLE :: GNTC(:,:,:),ATTP(:)
++C
++      ONEC=(1.D0,0.D0)
++      IC=(0.D0,1.D0)
++      ZEROC=(0.D0,0.D0)
++      IBESS=3
++      NL2=2*NL_M
++      NATOMS=NATCLU_M
++C
++C  Size of the matrix N = sum over atoms of (LMAX+1)^2
++C
++      N=0
++      DO JTYP=1,N_PROT
++        N=N+NATYP(JTYP)*(LMAX(JTYP,JE)+1)*(LMAX(JTYP,JE)+1)
++      ENDDO
++C
++C  Gaunt cache GNTC(0:V2GL,1:V2MAXL,1:V2MAXL), as in the earlier GPU version (ped_assembly)
++C    (row index INDK = LK*LK+LK+MK+1, column index INDJ = LJ*LJ+LJ+MJ+1)
++C
++      V2MAXLK=0
++      DO KTYP=1,N_PROT
++        V2MAXLK=MAX(V2MAXLK,LMAX(KTYP,JE))
++      ENDDO
++      V2GL=2*V2MAXLK
++      V2MAXL=(V2MAXLK+1)*(V2MAXLK+1)
++      ALLOCATE(GNTC(0:V2GL,V2MAXL,V2MAXL))
++      DO LK=0,V2MAXLK
++        DO MK=-LK,LK
++          INDK=LK*LK+LK+MK+1
++          DO LJ=0,V2MAXLK
++            DO MJ=-LJ,LJ
++              INDJ=LJ*LJ+LJ+MJ+1
++              GNT=0.D0
++              CALL GAUNT2(LK,MK,LJ,MJ,GNT)
++              GNTC(0:V2GL,INDJ,INDK)=GNT(0:V2GL)
++            ENDDO
++          ENDDO
++        ENDDO
++      ENDDO
++C
++C  Row descriptors, in the same order as the CPU branch (KLIN loop)
++C
++      ALLOCATE(IROWA(N),IROWL(N),IROWM(N),IROWG(N),ROWT(N))
++      N=0
++      DO KTYP=1,N_PROT
++        LMK=LMAX(KTYP,JE)
++        DO KNUM=1,NATYP(KTYP)
++          KATL=NCORR(KNUM,KTYP)
++          DO LK=0,LMK
++            ILK=LK*LK+LK+1
++            TLK=DCMPLX(TL(LK,1,KTYP,JE))
++            DO MK=-LK,LK
++              N=N+1
++              IROWA(N)=KATL
++              IROWL(N)=LK
++              IROWM(N)=MK
++              IROWG(N)=ILK+MK
++              ROWT(N)=TLK
++            ENDDO
++          ENDDO
++        ENDDO
++      ENDDO
++C
++C  Reduced right-hand sides: absorber columns LJ*LJ+LJ+1+MJ for the LF
++C    loop of phddif_mi.f (DO LF=LF1,LF2,ISTEP_LF), as in the IRHSRD=1 branch
++C
++      NRHS=0
++      DO LJ=0,LMAX(1,JE)
++        IF((LJ.GE.LF1).AND.(LJ.LE.LF2).AND.
++     1     (MOD(LJ-LF1,ISTEP_LF).EQ.0)) NRHS=NRHS+2*LJ+1
++      ENDDO
++      ALLOCATE(B(N,NRHS),X(N,NRHS))
++      B=ZEROC
++      KCOL=0
++      DO LJ=0,LMAX(1,JE)
++        IF((LJ.GE.LF1).AND.(LJ.LE.LF2).AND.
++     1     (MOD(LJ-LF1,ISTEP_LF).EQ.0)) THEN
++          DO MJ=-LJ,LJ
++            KCOL=KCOL+1
++            B(LJ*LJ+LJ+1+MJ,KCOL)=ONEC
++          ENDDO
++        ENDIF
++      ENDDO
++C
++C  Start the GPU matrix for this energy (descriptors and Gaunt cache)
++C
++      ALLOCATE(YPAIR(0:NL2,-NL2:NL2,NATOMS),HPAIR(0:NL2,NATOMS))
++      ALLOCATE(ATTP(NATOMS))
++      ALLOCATE(ICOLL(V2MAXL),ICOLM(V2MAXL),ICOLI(V2MAXL))
++      CALL MSSPEC_V2_GPU_BEGIN(METH,N,NATOMS,NL_M,V2GL,V2MAXL,GNTC,
++     1     IROWA,IROWL,IROWM,IROWG,ROWT)
++C
++C  Column atoms: pair functions (K relative to the column atom J) and
++C    the column block of J, in the same order as the CPU branch
++C
++C
++C  Matrix source (switch MSSPEC_V2_GPU_BUILD, read at each call; begin in
++C    msspec_v2_gpu.cu applies the same rule). '0' = CPU build, otherwise
++C    (unset, '1', ...) = GPU build by the column calls, as before.
++C
++      IGPUB=1
++      IBLEN=0
++      IBSTAT=1
++      GBENV=' '
++      CALL GET_ENVIRONMENT_VARIABLE('MSSPEC_V2_GPU_BUILD',GBENV,IBLEN,
++     1                              IBSTAT)
++      IF((IBSTAT.EQ.0).AND.(IBLEN.EQ.1)) THEN
++        IF(GBENV(1:1).EQ.'0') IGPUB=0
++      ENDIF
++C
++      IF(IGPUB.EQ.1) THEN
++      JOFF=0
++      DO JTYP=1,N_PROT
++        LMJ=LMAX(JTYP,JE)
++        DO JNUM=1,NATYP(JTYP)
++          JATL=NCORR(JNUM,JTYP)
++          XJ=SYM_AT(1,JATL)
++          YJ=SYM_AT(2,JATL)
++          ZJ=SYM_AT(3,JATL)
++          YPAIR=ZEROC
++          HPAIR=ZEROC
++          ATTP=0.D0
++          DO KTYP=1,N_PROT
++            LMK=LMAX(KTYP,JE)
++            DO KNUM=1,NATYP(KTYP)
++              KATL=NCORR(KNUM,KTYP)
++              IF(KATL.NE.JATL) THEN
++                XKJ=DBLE(SYM_AT(1,KATL)-XJ)
++                YKJ=DBLE(SYM_AT(2,KATL)-YJ)
++                ZKJ=DBLE(SYM_AT(3,KATL)-ZJ)
++                RKJ=DSQRT(XKJ*XKJ+YKJ*YKJ+ZKJ*ZKJ)
++                KRKJ=DBLE(VK(JE))*RKJ
++                ATTP(KATL)=DEXP(-DIMAG(DCMPLX(VK(JE)))*RKJ)
++                EXPKJ=(XKJ+IC*YKJ)/RKJ
++                ZDKJ=ZKJ/RKJ
++                CALL SPH_HAR2(NL2,ZDKJ,EXPKJ,YLM,LMJ+LMK)
++                CALL BESPHE2(LMJ+LMK+1,IBESS,KRKJ,HL1)
++                DO L=0,NL2
++                  DO M=-NL2,NL2
++                    YPAIR(L,M,KATL)=YLM(L,M)
++                  ENDDO
++                  HPAIR(L,KATL)=HL1(L)
++                ENDDO
++              ENDIF
++            ENDDO
++          ENDDO
++C
++C  Column descriptors of atom JATL: LJ, MJ, local index ILJ+MJ
++C
++          NCOLJ=0
++          DO LJ=0,LMJ
++            ILJ=LJ*LJ+LJ+1
++            DO MJ=-LJ,LJ
++              NCOLJ=NCOLJ+1
++              ICOLL(NCOLJ)=LJ
++              ICOLM(NCOLJ)=MJ
++              ICOLI(NCOLJ)=ILJ+MJ
++            ENDDO
++          ENDDO
++          IFIRST=JOFF+1
++          CALL MSSPEC_V2_GPU_COLUMN(IFIRST,NCOLJ,JATL,NATOMS,NL_M,
++     1         V2GL,V2MAXL,ICOLL,ICOLM,ICOLI,YPAIR,HPAIR,ATTP)
++          JOFF=JOFF+NCOLJ
++        ENDDO
++      ENDDO
++      ELSE
++C
++C  CPU build (MSSPEC_V2_GPU_BUILD=0): MS in FP64 by the stock loop
++C    (V2_HOST_MS), then one upload to the device (msspec_v2_gpu.cu)
++C
++        ALLOCATE(SMH(N,N))
++        CALL V2_HOST_MS(JE,N,SMH)
++        CALL MSSPEC_V2_GPU_UPLOAD(N,SMH)
++        DEALLOCATE(SMH)
++      ENDIF
++C
++C  Solve MS * X = B on the GPU (X is FP64)
++C
++      CALL MSSPEC_V2_GPU_SOLVE(N,NRHS,B,X)
++C
++C   Storage of the Tau matrix: copy of the IRHSRD=1 branch of
++C     INV_MAT_MS, with X in place of IN
++C
++      KCOL=0
++      DO LJ=0,LMAX(1,JE)
++        ILJ=LJ*LJ+LJ+1
++        TLJ=DCMPLX(TL(LJ,1,1,JE))
++        IF((LJ.GE.LF1).AND.(LJ.LE.LF2).AND.
++     1     (MOD(LJ-LF1,ISTEP_LF).EQ.0)) THEN
++          DO MJ=-LJ,LJ
++            INDJ=ILJ+MJ
++            KCOL=KCOL+1
++            KLIN=0
++            DO KTYP=1,N_PROT
++              LMK=LMAX(KTYP,JE)
++              DO KNUM=1,NATYP(KTYP)
++                KATL=NCORR(KNUM,KTYP)
++                DO LK=0,LMK
++                  ILK=LK*LK+LK+1
++                  DO MK=-LK,LK
++                    INDK=ILK+MK
++                    KLIN=KLIN+1
++                    TAU(INDK,INDJ,KATL)=CMPLX(X(KLIN,KCOL)*TLJ)
++                  ENDDO
++                ENDDO
++              ENDDO
++            ENDDO
++          ENDDO
++        ENDIF
++      ENDDO
++C
++      DEALLOCATE(IROWA,IROWL,IROWM,IROWG,ROWT,B,X,GNTC,ATTP)
++      DEALLOCATE(YPAIR,HPAIR,ICOLL,ICOLM,ICOLI)
++      RETURN
++      END
++C
++C=======================================================================
++C
++      SUBROUTINE V2_HOST_MS(JE,N,SMH)
++C
++C   CPU build of the V2 matrix MS = (I-GoT) for MSSPEC_V2_GPU_BUILD=0.
++C     The loops are the JLIN/KLIN build loops of INV_MAT_MS
++C     (axb_mat_ms_la.f), in FP64 with the same formulas, so SMH(KLIN,JLIN)
++C     holds the same elements as the stock matrix SM. N must equal the
++C     number of columns JLIN counted here.
++C
++      USE DIM_MOD
++      USE COOR_MOD
++      USE INIT_L_MOD
++      USE TRANS_MOD
++C
++      IMPLICIT NONE
++C
++      INTEGER JE,N
++      COMPLEX*16 SMH(N,N)
++      COMPLEX*16 HL1(0:2*NL_M),SUM_L,ONEC,IC,ZEROC
++      COMPLEX*16 YLM(0:2*NL_M,-2*NL_M:2*NL_M),TLJ,TLK,EXPKJ
++      REAL*8 PI,ATTKJ,GNT(0:N_GAUNT),XKJ,YKJ,ZKJ,RKJ,ZDKJ,KRKJ
++      REAL XJ,YJ,ZJ
++      INTEGER IBESS,JLIN,KLIN,JTYP,JNUM,JATL,LMJ,LJ,ILJ,MJ
++      INTEGER KTYP,KNUM,KATL,LMK,LK,ILK,MK,L_MIN,L_MAX,L,M
++      INTEGER NBTYPJ,NBTYPK
++C
++      DATA PI /3.1415926535898D0/
++C
++      ONEC=(1.D0,0.D0)
++      IC=(0.D0,1.D0)
++      ZEROC=(0.D0,0.D0)
++      IBESS=3
++      JLIN=0
++      DO JTYP=1,N_PROT
++        NBTYPJ=NATYP(JTYP)
++        LMJ=LMAX(JTYP,JE)
++        DO JNUM=1,NBTYPJ
++          JATL=NCORR(JNUM,JTYP)
++          XJ=SYM_AT(1,JATL)
++          YJ=SYM_AT(2,JATL)
++          ZJ=SYM_AT(3,JATL)
++          DO LJ=0,LMJ
++            ILJ=LJ*LJ+LJ+1
++            TLJ=DCMPLX(TL(LJ,1,JTYP,JE))
++            DO MJ=-LJ,LJ
++              JLIN=JLIN+1
++              KLIN=0
++              DO KTYP=1,N_PROT
++                NBTYPK=NATYP(KTYP)
++                LMK=LMAX(KTYP,JE)
++                DO KNUM=1,NBTYPK
++                  KATL=NCORR(KNUM,KTYP)
++                  IF(KATL.NE.JATL) THEN
++                    XKJ=DBLE(SYM_AT(1,KATL)-XJ)
++                    YKJ=DBLE(SYM_AT(2,KATL)-YJ)
++                    ZKJ=DBLE(SYM_AT(3,KATL)-ZJ)
++                    RKJ=DSQRT(XKJ*XKJ+YKJ*YKJ+ZKJ*ZKJ)
++                    KRKJ=DBLE(VK(JE))*RKJ
++                    ATTKJ=DEXP(-DIMAG(DCMPLX(VK(JE)))*RKJ)
++                    EXPKJ=(XKJ+IC*YKJ)/RKJ
++                    ZDKJ=ZKJ/RKJ
++                    CALL SPH_HAR2(2*NL_M,ZDKJ,EXPKJ,YLM,LMJ+LMK)
++                    CALL BESPHE2(LMJ+LMK+1,IBESS,KRKJ,HL1)
++                  ENDIF
++C
++                  DO LK=0,LMK
++                    ILK=LK*LK+LK+1
++                    L_MIN=ABS(LK-LJ)
++                    L_MAX=LK+LJ
++                    TLK=DCMPLX(TL(LK,1,KTYP,JE))
++                    DO MK=-LK,LK
++                      KLIN=KLIN+1
++                      SUM_L=ZEROC
++                      IF(KATL.NE.JATL) THEN
++                        CALL GAUNT2(LK,MK,LJ,MJ,GNT)
++                        DO L=L_MIN,L_MAX,2
++                          M=MJ-MK
++                          IF(ABS(M).LE.L) THEN
++                            SUM_L=SUM_L+(IC**L)*HL1(L)*
++     1                                   YLM(L,M)*GNT(L)
++                          ENDIF
++                        ENDDO
++                        SUM_L=SUM_L*ATTKJ*4.D0*PI*IC
++                      ENDIF
++C
++                      IF(KLIN.EQ.JLIN) THEN
++                        SMH(KLIN,JLIN)=ONEC-TLK*SUM_L
++                      ELSE
++                        SMH(KLIN,JLIN)=-TLK*SUM_L
++                      ENDIF
++                    ENDDO
++                  ENDDO
++C
++                ENDDO
++              ENDDO
++C
++            ENDDO
++          ENDDO
++C
++        ENDDO
++      ENDDO
++C
++      IF(JLIN.NE.N) THEN
++        WRITE(6,*) 'V2_HOST_MS: order mismatch', JLIN, N
++        CALL EXIT(3)
++      ENDIF
++      RETURN
++      END
+diff -ruN -x .git -x build -x __pycache__ -x '*.so' -x '*.o' -x '*.mod' -x output a/msspec_python3/src/msspec/spec/fortran/phd_mi_noso_nosp_nosym.mk b/msspec_python3/src/msspec/spec/fortran/phd_mi_noso_nosp_nosym.mk
+--- a/msspec_python3/src/msspec/spec/fortran/phd_mi_noso_nosp_nosym.mk	2025-02-26 13:07:29.000000000 +0100
++++ b/msspec_python3/src/msspec/spec/fortran/phd_mi_noso_nosp_nosym.mk	2026-11-18 22:02:30.273723446 +0100
+@@ -8,4 +8,15 @@
+ MAIN_F = phd_mi_noso_nosp_nosym/main.f
+ SO     = _phd_mi_noso_nosp_nosym.so
+ 
++# V2 GPU hook (step 1a): the C++ stub is linked into this .so only.
++# options.mk adds EXTRA_OBJECTS to the .so prerequisites and EXTRA_LINK_FLAGS
++# to the f2py command. Other .mk files leave both empty.
++EXTRA_OBJECTS = $(BUILDDIR)/msspec_v2_gpu.o
++EXTRA_LINK_FLAGS = -lcudart -lcublas -lcusolver -lmagma
++EXTRA_LDFLAGS = -Wl,--no-as-needed
++
+ include ../../../options.mk
++
++$(BUILDDIR)/msspec_v2_gpu.o: ../../../../../../src/solver/msspec_v2_gpu.cu
++	mkdir -p $(dir $@)
++	/usr/bin/nvcc -arch=sm_86 -O2 -Xcompiler=-fPIC -c $< -o $@
+diff -ruN -x .git -x build -x __pycache__ -x '*.so' -x '*.o' -x '*.mod' -x output a/msspec_python3/src/options.mk b/msspec_python3/src/options.mk
+--- a/msspec_python3/src/options.mk	2025-02-26 13:07:29.000000000 +0100
++++ b/msspec_python3/src/options.mk	2026-11-18 21:44:22.230047979 +0100
+@@ -141,8 +141,8 @@
+ 	$(FC) $(FFLAGS) -J $(BUILDDIR) -I $(BUILDDIR) -fPIC -o $@ -c $^ $(OUPUT_REDIRECTION)
+ 
+ 
+-$(SO): $(OBJS) $(MAIN_F)
++$(SO): $(OBJS) $(MAIN_F) $(EXTRA_OBJECTS)
+ 	@echo "building Python binding $@..."      
+ 	mkdir -p $(BUILDDIR)
+-	$(F2PY) $(F2PYFLAGS) -I$(BUILDDIR) -m $(basename $@) -c $(OBJS) $(MAIN_F) $(OUPUT_REDIRECTION)
++	LDFLAGS="$(LDFLAGS) $(EXTRA_LDFLAGS)" $(F2PY) $(F2PYFLAGS) $(EXTRA_LINK_FLAGS) -I$(BUILDDIR) -m $(basename $@) -c $(OBJS) $(EXTRA_OBJECTS) $(MAIN_F) $(OUPUT_REDIRECTION)
+ 	mv $(basename $@).*.so $@
